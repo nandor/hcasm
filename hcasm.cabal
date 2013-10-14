@@ -1,0 +1,14 @@
+Name:          hcasm
+Version:       0.0
+Description:   Chip16 Assembler
+License:       BSD3
+License-file:  LICENSE
+Author:        Nandor Licker
+Maintainer:    licker.nandor@gmail.com
+Build-Type:    Simple
+Cabal-Version: >=1.2
+
+Executable hcasm
+  Main-is:        HCasm.hs
+  Build-Depends:  base >= 3 && < 5
+
