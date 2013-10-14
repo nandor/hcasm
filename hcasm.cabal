@@ -10,5 +10,9 @@ Cabal-Version: >=1.2
 
 Executable hcasm
   Main-is:        HCasm.hs
-  Build-Depends:  base >= 3 && < 5
+  Build-Depends:  base >= 3
+
+Executable hcdasm
+  Main-is:        HCdasm.hs
+  Build-Depends:  base >= 3, digest, bytestring, binary >= 0.7
 
