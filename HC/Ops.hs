@@ -9,13 +9,13 @@ import Data.Int
 import Data.List
 
 data Parameter
-  = Imm8
+  = Bit Int
+  | Imm4 Int
+  | Imm8 Int
   | Imm16
   | RegX
   | RegY
   | RegZ
-  | N
-  | X
   deriving (Eq, Show)
 
 
@@ -25,21 +25,21 @@ type Op
 
 operators :: [ Op ]
 operators
-  = [ ( "nop",      0x00, [] )
-    , ( "cls",      0x01, [] )
-    , ( "vlbnk",    0x02, [] )
-    , ( "bgc",      0x03, [] )
+  = [ ( "nop",      0x00, [ ] )
+    , ( "cls",      0x01, [ ] )
+    , ( "vlbnk",    0x02, [ ] )
+    , ( "bgc",      0x03, [ Imm4 5 ] )
     , ( "spr",      0x04, [ Imm16 ] )
     , ( "drw",      0x05, [ RegX, RegY, Imm16 ] )
     , ( "drw",      0x06, [ RegX, RegY, RegZ ] )
     , ( "rnd",      0x07, [ RegX, Imm16 ] )
-    , ( "flip",     0x08, [ Imm8, Imm8 ] )
-    , ( "snd0",     0x09, [] )
+    , ( "flip",     0x08, [ Bit 25, Bit 24] )
+    , ( "snd0",     0x09, [ ] )
     , ( "snd1",     0x0A, [ Imm16 ] )
     , ( "snd2",     0x0B, [ Imm16 ] )
     , ( "snd3",     0x0C, [ Imm16 ] )
     , ( "snp",      0x0D, [ RegX, Imm16 ] )
-    , ( "sng",      0x0E, [ Imm8, Imm16 ] )
+    , ( "sng",      0x0E, [ Imm8 1, Imm16 ] )
     , ( "jmp",      0x10, [ Imm16 ] )
     , ( "j",        0x12, [ Imm16 ] ) -- special
     , ( "jme",      0x13, [] )
