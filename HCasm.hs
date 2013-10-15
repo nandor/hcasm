@@ -5,7 +5,7 @@
 
 import Data.Char
 import Control.Applicative
-import Ops
+import HC.Ops
 
 
 uncomment :: String -> [ String ]

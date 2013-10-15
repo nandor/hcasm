@@ -2,7 +2,7 @@
 --------------------------------------------------------------------------------
 -- Chip16 Assembler / Disassembler written in Haskell
 --------------------------------------------------------------------------------
-module HCdasm where
+module Main where
 
 
 import qualified Data.ByteString.Lazy as BSL
@@ -60,13 +60,16 @@ dissassemble (ROM start rom)
   = map trans rom
   where
     trans dw
-      = name ++ " " ++ (concat $ intersperse "," $ map trans' arg)
+      | op == 0x12 = 'j' : cond
+      | op == 0x17 = 'c' : cond
+      | otherwise = name ++ " " ++ (concat $ intersperse "," $ map trans' arg)
       where
         [ op, rr, ll, hh ] = dw
         ( name, _, arg ) = fromMaybe (operators !! 0) (getOperator op)
         dw' = foldr (\x a -> (a `shiftL` 8) .|. x) 0 dw
 
 
+        trans' SP       = "sp"
         trans' RegX     = printf "r%1x" $ rr .&. 0x0F
         trans' RegY     = printf "r%1x" $ (rr .&. 0xF0) `shiftR` 4
         trans' RegZ     = printf "r%1x" $ ll .&. 0x0F
@@ -76,6 +79,8 @@ dissassemble (ROM start rom)
         trans' (Imm4 x) = let byte = x `div` 2
                               nibble = 1 - x `mod` 2
                           in printf "r%1x" $ (dw !! byte) `shiftR` nibble
+      
+        cond = (getJump (rr .&. 0x0F)) ++ " " ++ trans' Imm16
 
 
 -- Entry point

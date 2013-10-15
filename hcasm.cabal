@@ -8,11 +8,13 @@ Maintainer:    licker.nandor@gmail.com
 Build-Type:    Simple
 Cabal-Version: >=1.2
 
+Executable hcdasm
+  Main-is:        HCdasm.hs
+  Build-Depends:  base >= 3, digest, bytestring, binary >= 0.7
+
 Executable hcasm
   Main-is:        HCasm.hs
   Build-Depends:  base >= 3
 
-Executable hcdasm
-  Main-is:        HCdasm.hs
-  Build-Depends:  base >= 3, digest, bytestring, binary >= 0.7
+
 
