@@ -15,13 +15,11 @@ import           Text.ParserCombinators.Parsec.Language
 import           HC.Ops
 
 
---------------------------------------------------------------------------------
--- Parser
---------------------------------------------------------------------------------
-data Argument = ArgReg Int
-              | ArgImm Int
-              | ArgLabel String
-              deriving (Eq, Show)
+uncomment :: String -> [ String ]
+uncomment xs
+  = filter (not . null) $ (fst . span (/= ';')) 
+                       <$> (dropWhile isSpace) 
+                       <$> lines xs
 
 
 data Statement = Label String
