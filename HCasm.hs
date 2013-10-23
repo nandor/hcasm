@@ -6,84 +6,115 @@ module HCasm where
 
 
 import           Data.Char
+import           Data.Foldable hiding (foldl, mapM_)
 import           Control.Monad
+import           Control.Applicative ((<*), (*>), (<$>))
 import           System.Environment
 import           System.IO
-import           Text.ParserCombinators.Parsec hiding (label)
-import qualified Text.ParserCombinators.Parsec.Token as P
-import           Text.ParserCombinators.Parsec.Language
+import           Text.Parsec hiding (label)
+import qualified Text.Parsec.Token as P
+import           Text.Parsec.Language
 import           HC.Ops
 
 
-uncomment :: String -> [ String ]
-uncomment xs
-  = filter (not . null) $ (fst . span (/= ';')) 
-                       <$> (dropWhile isSpace) 
-                       <$> lines xs
+--------------------------------------------------------------------------------
+-- Parser
+--------------------------------------------------------------------------------
+data Argument = ArgReg Int
+              | ArgImm Int
+              | ArgLabel String
+              deriving (Eq, Show)
 
 
 data Statement = Label String
                | Instr String [ Argument ]
+               | Importbin
                deriving (Eq, Show)
 
 
-eol :: Parser ()
-eol
-  = many1 (oneOf "\r\n") >> return ()
+readHex :: String -> Int
+readHex
+  = foldl (\a x -> a * 16 + digitToInt x) 0
 
 
-blank :: Parser ()
+readDec :: String -> Int
+readDec
+  = foldl (\a x -> a * 10 + digitToInt x) 0
+
+
+eol :: Parsec String u ()
+eol 
+  = void $ many1 (oneOf "\r\n")
+
+
+number :: Parsec String u Int
+number 
+  = asum [ readHex <$> (try $ string "#"  *> many1 hexDigit)
+         , readHex <$> (try $ string "0x" *> many1 hexDigit)
+         , readHex <$> (try $ many1 hexDigit <* char 'h')
+         , readDec <$> (try $ many1 digit)
+         ]
+
+
+blank :: Parsec String u ()
 blank
-  =   (char ' ' >> return ())
-  <|> (char '\t' >> return ())
-  <|> (char ';' >> manyTill anyChar (lookAhead eol) >> return ())
+  = asum [ void (char ' ')
+         , void (char '\t')
+         , void (char ';' *> manyTill anyChar (lookAhead eol))
+         ]
 
 
-identifier :: Parser String
+identifier :: Parsec String u String
 identifier
-  = many1 (oneOf ('_' : ['a'..'z'] ++ ['A'..'Z'] ++ ['0'..'9']))
+  = many1 (alphaNum <|> char '_')
 
 
-label :: Parser Statement
-label = do
-  char ':'
-  ss <- identifier
-  many blank
-  return (Label ss)
+label :: Parsec String u Statement
+label
+  = Label <$> (identifier <* char ':' <* many blank <* optional eol)
 
 
-arg :: Parser Argument
-arg
-  =   ((char '#') >> many hexDigit >>= (\xs -> return (ArgImm (read xs))))
-  <|> ((char 'r') >> hexDigit >>= (\xs -> return (ArgReg (digitToInt xs))))
-  <|> (many1 digit >>= (\xs -> return (ArgImm (read xs))))
-  <|> (identifier >>= (\xs -> return (ArgLabel xs)))
+argument :: Parsec String u Argument
+argument
+  = asum [ ArgReg . digitToInt <$> (char 'r' *> hexDigit)
+         , ArgImm <$> number
+         , ArgLabel <$> identifier
+         ]
 
 
-instruction :: Parser Statement
+instruction :: Parsec String u Statement
 instruction = do
-  many blank
+  sepBy (many blank) eol
   ss <- many1 alphaNum
+  many1 blank
+  args <- sepBy argument (char ',')
   many blank
-  stmts <- sepBy arg (char ',')
-  many blank
-  return (Instr ss stmts)
+  eol <|> eof
+  return (Instr ss args)
 
 
-statement :: Parser Statement
+statement :: Parsec String u Statement
 statement
-  = instruction <|> label
+  = asum [ try instruction
+         , try label
+         ]
 
 
-parser :: Parser [ Statement ]
-parser = do
-  stmts <- sepBy statement eol
-  -- eof
-  return stmts
+parser :: Parsec String u [ Statement ]
+parser
+  = many statement <* eof
 
 
 --------------------------------------------------------------------------------
 -- Assembler
+--------------------------------------------------------------------------------
+assemble :: [ Statement ] -> IO ()
+assemble xs = do
+  mapM_ print xs
+
+
+--------------------------------------------------------------------------------
+-- Entry point
 --------------------------------------------------------------------------------
 main :: IO ()
 main
@@ -98,4 +129,5 @@ main' fi fo = do
   
   case parse parser "" source of
     Left err -> putStrLn $ "Parse Error: " ++ show err
-    Right x -> putStrLn $ show x
+    Right x -> do
+      assemble x
