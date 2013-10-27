@@ -8,12 +8,13 @@ module HCasm where
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Lazy.Char8
 import           Data.Char
+import           Data.Either
 import           Data.Foldable (asum)
 import           Data.Maybe
 import           Data.Word
 import           Control.Applicative ((<*), (*>), (<$>))
 import           Control.Monad
-import           Text.Parsec hiding (label)
+import           Text.Parsec hiding (label) 
 import           Text.Parsec.Pos
 import           Text.Parsec.Language
 import           System.Environment
@@ -92,8 +93,10 @@ argument
 -- Parses an identifier followed by ':'
 label :: Parsec String u (Tag Statement)
 label
-  = getPosition >>= \pos -> (Tag pos . Label) <$>
-    (identifier <* char ':')
+  = getPosition >>= \pos -> (Tag pos . Label) <$> asum
+    [ identifier <* char ':'
+    , char ':' *> identifier
+    ]
 
 
 -- Parses an instruction followed by arguments
@@ -135,15 +138,29 @@ statement
 
 
 -- Parse a list of statements
-parser :: Parsec String u [ (Tag Statement) ]
-parser
-  = many statement <* eof
+parser :: String -> Either String [ ( Tag Statement ) ]
+parser source
+  = case parse (many statement <* eof) "" source of
+      Left  err -> Left $ show err
+      ast       -> ast
 
 
 --------------------------------------------------------------------------------
 -- Assembler
 --------------------------------------------------------------------------------
+linkLabels :: [ (Tag Statement) ] -> [ ( String, Int ) ]
+linkLabels
+  = fst . foldl step ( [ ], 0 )
+  where
+    step ( ls, addr ) (Tag _pos stmt)
+      = case stmt of
+        Label xs       -> ( ( xs, addr ) : ls, addr)
+        Instr op arg   -> ( ls, addr + 4 )
+        DeclByte bytes -> ( ls, addr + (length bytes) )
 
+
+assembler :: [ (Tag Statement) ] -> Either String [ Word8 ]
+assembler stmts = Left "Error"
 
 --------------------------------------------------------------------------------
 -- Entry point
@@ -159,6 +176,6 @@ main' :: String -> String -> IO ()
 main' fi fo = do
   source <- readFile fi
   
-  case parse parser "" source of
-    Left err -> putStrLn $ "Parse Error: " ++ show err
-    Right x -> mapM_ print x
+  case parser source >>= assembler of
+    Left err    -> putStrLn err
+    Right code  -> print code
