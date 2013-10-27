@@ -65,7 +65,7 @@ dissassemble (ROM start rom)
       | otherwise = name ++ " " ++ (concat $ intersperse "," $ map trans' arg)
       where
         [ op, rr, ll, hh ] = dw
-        ( name, _, arg ) = fromMaybe (operators !! 0) (getOperator op)
+        ( name, _, arg ) = fromMaybe (operators !! 0) (getOperatorByCode op)
         dw' = foldr (\x a -> (a `shiftL` 8) .|. x) 0 dw
 
 
@@ -80,7 +80,7 @@ dissassemble (ROM start rom)
                               nibble = 1 - x `mod` 2
                           in printf "r%1x" $ (dw !! byte) `shiftR` nibble
       
-        cond = (getJump (rr .&. 0x0F)) ++ " " ++ trans' Imm16
+        cond = (getJumpByCode (rr .&. 0x0F)) ++ " " ++ trans' Imm16
 
 
 -- Entry point

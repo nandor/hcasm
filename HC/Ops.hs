@@ -8,6 +8,7 @@ import Data.Bits
 import Data.Int
 import Data.List
 import Data.Maybe
+import Data.Word
 import Control.Applicative
 
 data Parameter
@@ -37,7 +38,9 @@ jump
     , ( "no", 0x6 )
     , ( "a",  0x7 )
     , ( "ae", 0x8 )
+    , ( "nc", 0x8 )
     , ( "b",  0x9 )
+    , ( "c",  0x9 )
     , ( "be", 0xA )
     , ( "g",  0xB )
     , ( "ge", 0xC )
@@ -51,7 +54,7 @@ operators :: [ Op ]
 operators
   = [ ( "nop",      0x00, [ ] )
     , ( "cls",      0x01, [ ] )
-    , ( "vlbnk",    0x02, [ ] )
+    , ( "vblnk",    0x02, [ ] )
     , ( "bgc",      0x03, [ Imm4 5 ] )
     , ( "spr",      0x04, [ Imm16 ] )
     , ( "drw",      0x05, [ RegX, RegY, Imm16 ] )
@@ -65,12 +68,12 @@ operators
     , ( "snp",      0x0D, [ RegX, Imm16 ] )
     , ( "sng",      0x0E, [ Imm8 1, Imm16 ] )
     , ( "jmp",      0x10, [ Imm16 ] )
-    , ( "j",        0x12, [] ) -- special
+    , ( "",         0x12, [ Imm16 ] ) -- special
     , ( "jme",      0x13, [ RegX, RegY, Imm16 ] )
     , ( "call",     0x14, [ Imm16 ] )
     , ( "ret",      0x15, [ ] )
     , ( "jmp",      0x16, [ RegX ] )
-    , ( "c",        0x17, [] ) -- special
+    , ( "",         0x17, [ Imm16 ] ) -- special
     , ( "call",     0x18, [ Imm16 ] )
     , ( "ldi",      0x20, [ RegX, Imm16 ] )
     , ( "ldi",      0x21, [ SP, Imm16 ] )
@@ -122,13 +125,22 @@ operators
     ]
 
 
-getOperator :: Int -> Maybe Op
-getOperator n
+getOperatorByName :: String -> [ Op ]
+getOperatorByName name
+  = filter (\( name', _, _ ) -> name == name') operators
+
+
+getOperatorByCode :: Int -> Maybe Op
+getOperatorByCode n
   = find (\( _, n', _ ) -> n == n' ) operators
 
 
-getJump :: Int -> String
-getJump n
-  = fst <$> fromJust $ find (\( j, n' ) -> n' == n ) jump
+getJumpByCode :: Int -> String
+getJumpByCode n
+  = fst . fromJust $ find (\( j, n' ) -> n' == n ) jump
 
+
+getJumpByName :: String -> Maybe Int
+getJumpByName j
+  = snd <$> find (\( j', n ) -> j' == j ) jump
   
