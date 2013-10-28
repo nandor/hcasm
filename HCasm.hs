@@ -2,7 +2,7 @@
 --------------------------------------------------------------------------------
 -- Chip16 Assembler written in Haskell
 --------------------------------------------------------------------------------
-module HCasm where
+module Main where
 
 
 import           Data.ByteString.Lazy (ByteString)
