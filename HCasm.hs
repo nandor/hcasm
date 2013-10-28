@@ -15,6 +15,7 @@ import           Data.Binary.Put
 import           Data.Foldable (asum)
 import           Data.Maybe
 import           Data.Word
+import           Debug.Trace
 import           Control.Applicative ((<*), (*>), (<$>))
 import           Control.Monad
 import           Control.Monad.Instances
@@ -22,7 +23,9 @@ import           Numeric (showHex)
 import           Text.Parsec hiding (label) 
 import           Text.Parsec.Pos
 import           Text.Parsec.Language
+import           System.Directory
 import           System.Environment
+import           System.FilePath
 import           System.IO
 import           HC.Ops
 
@@ -30,6 +33,10 @@ import           HC.Ops
 --------------------------------------------------------------------------------
 -- Syntax tree (sort of)
 --------------------------------------------------------------------------------
+type Statements = [ Statement ]
+type Binaries = [ ( String, ByteString ) ]
+
+
 data Argument = ArgReg Int
               | ArgImm Int
               | ArgSP
@@ -52,6 +59,12 @@ data Tag a = Tag SourcePos a
 -- Parser
 --------------------------------------------------------------------------------
 
+-- Reads a number from a string
+readBase :: Int -> String -> Int
+readBase base
+  = foldl (\a x -> a * base + digitToInt x) 0
+
+
 -- Parses the newline character
 eol :: Parsec String u ()
 eol 
@@ -66,6 +79,11 @@ blank
          , void (char ';' *> manyTill anyChar (lookAhead eol))
          ]
 
+-- Multiple blank lines
+manyBlank :: Parsec String u ()
+manyBlank
+  = void $ sepBy (many blank) eol
+
 
 -- Parses a decimal or a hexadecimal constant
 number :: Parsec String u Int
@@ -75,24 +93,21 @@ number
          , readBase 16 <$> (try $ many1 hexDigit <* char 'h')
          , readBase 10 <$> (try $ many1 digit)
          ]
-  where
-    readBase base
-      = foldl (\a x -> a * base + digitToInt x) 0
-
 
 -- Parses an identifier
 identifier :: Parsec String u String
-identifier
-  = many1 (alphaNum <|> char '_')
-
+identifier = do
+  first <- letter
+  others <- many1 (alphaNum <|> char '_')
+  return (first : others)
 
 -- Parses a command argument
 argument :: Parsec String u (Tag Argument)
 argument
   = getPosition >>= \pos -> (Tag pos) <$> asum 
     [ ArgReg . digitToInt <$> (char 'r' *> hexDigit)
-    , ArgImm <$> number
     , ArgLabel <$> identifier
+    , ArgImm <$> number
     , try $ string "sp" >> return ArgSP
     ]
   
@@ -112,9 +127,10 @@ instruction = do
   pos <- getPosition
 
   ss <- many1 alphaNum
-  many1 blank
 
-  args <- sepBy argument (char ',')
+  args <- option [] $ do
+    many1 (char ' ' <|> char '\t')
+    sepBy argument (char ',' >> many (char ' ' <|> char '\t'))
 
   return (Tag pos $ Instr ss args)
 
@@ -125,29 +141,50 @@ declByte = do
   pos <- getPosition
 
   string "db"
-  many1 blank
 
-  args <- sepBy number (char ',')
+  args <- option [] $ do
+    many1 (char ' ' <|> char '\t')
+    sepBy number (char ',' *> many (char ' ' <|> char '\t'))
 
   return (Tag pos $ DeclByte (map fromIntegral $ args))
+
+
+-- Parses a binary file inclusion
+importbin :: Parsec String u (Tag Statement)
+importbin = do
+  pos <- getPosition
+
+  string "importbin"
+  many1 blank
+
+  file <- manyTill anyChar blank
+  many blank
+  offset <- readBase 10 <$> many1 digit
+  many1 blank
+  size <- readBase 10 <$> many1 digit
+  many1 blank
+  lbl <- identifier
+
+  return (Tag pos (Importbin file offset size lbl))
 
 
 -- Parse a single statement
 statement :: Parsec String u (Tag Statement)
 statement
-  = sepBy (many blank) eol *> asum stmts <* many blank <* (eol <|> eof)
+  = asum stmts <* manyBlank
   where
     stmts 
       = [ try declByte
-        , try instruction
+        , try importbin
         , try label
+        , try instruction
         ]
 
 
 -- Parse a list of statements
 parser :: String -> Either String [ ( Tag Statement ) ]
 parser source
-  = case parse (many1 statement <* eof) "" source of
+  = case parse (manyBlank *> many1 statement <* eof) "" source of
       Left  err -> Left $ show err
       Right ast -> Right ast
 
@@ -155,28 +192,47 @@ parser source
 --------------------------------------------------------------------------------
 -- Assembler
 --------------------------------------------------------------------------------
-linkLabels :: [ (Tag Statement) ] -> Map String Int
-linkLabels
-  = Map.fromList . fst . foldl step ( [ ], 0 )
-  where
-    step ( ls, addr ) (Tag _pos stmt)
-      = case stmt of
-        Label xs       -> ( ( xs, addr ) : ls, addr)
-        Instr op arg   -> ( ls, addr + 4 )
-        DeclByte bytes -> ( ls, addr + (length bytes) )
+splitWord :: Int -> [ Word8 ]
+splitWord x
+  = [ fromIntegral $ (x `shiftR` y) .&. 0xFF | y <- [0,8..24] ]
 
 
-assembler :: [ (Tag Statement) ] -> Either String ByteString
-assembler stmts
+replaceByte :: Int -> Int -> Int -> Int
+replaceByte dw i what
+  = (dw .&. (complement (0xFF `shiftL` (i * 8))) .|. (what `shiftL` (i * 8)))
+
+
+replaceNibble :: Int -> Int -> Int -> Int
+replaceNibble dw i what
+  = (dw .&. (complement (0xF `shiftL` (i * 4))) .|. (what `shiftL` (i * 4)))
+
+
+replaceBit :: Int -> Int -> Int -> Int
+replaceBit dw i what
+  = (dw .&. (complement (1 `shiftL` i)) .|. (what `shiftL` i))
+
+
+assembler ::  Binaries -> [ (Tag Statement) ] ->  Either String ByteString
+assembler bin stmts
   = BS.pack <$> concat <$> mapM (link >=> emitStmnt) ( order stmts [ ] )
   where
     -- Get the address of each label
     labels = linkLabels stmts
 
+    -- Find out the adress of each label
+    linkLabels
+      = Map.fromList . fst . foldl step ( [ ], 0 )
+      where
+        step ( ls, addr ) (Tag _pos stmt)
+          = case stmt of
+            Label xs           -> ( ( xs, addr ) : ls, addr )
+            Instr op arg       -> ( ls, addr + 4 )
+            DeclByte bytes     -> ( ls, addr + (length bytes) )
+            Importbin _ _ s xs -> ( ( xs, addr ) : ls, addr + s )
 
     -- Moves importbin statements at the end
     order [] xs
-      = xs
+      = reverse xs
     order (ib@(Tag ip (Importbin _ _ _ _)) : ss) xs
       = order ss (ib : xs)
     order (s : ss) xs
@@ -195,65 +251,49 @@ assembler stmts
     link stmnt
       = Right stmnt
 
-
     -- Emit the opcode
     emitStmnt (Tag ip (Label _))
       = Right [ ]
     emitStmnt (Tag ip (DeclByte bs))
       = Right bs
+    emitStmnt (Tag ip (Importbin file off size label))
+      = case lookup label bin of
+          Nothing -> Left  $ " Missing binary: " ++ file
+          Just bs -> Right $ BS.unpack (BS.take size' (BS.drop off' bs))
+      where
+        off' = fromIntegral off
+        size' = fromIntegral size
     emitStmnt (Tag ip (Instr xx@(x : xs) args))
-      = map fromIntegral <$> case getOperatorByName xx of
+      = splitWord <$> case getOperatorByName xx of
           o : os         -> match (o : os)
-          [ ] | x == 'j' -> condition 0x12 xs args
-          [ ] | x == 'c' -> condition 0x17 xs args
+          [ ] | x == 'j' -> emitArg args [ Imm16 ] 0x12
+          [ ] | x == 'c' -> emitArg args [ Imm16 ] 0x17
           _              -> Left $ (show ip) ++ " Invalid instruction: " ++ xx
       where
         match ((_, op, args') : ops)
-          = case emitArg args args' [ 0, 0, 0 ] of
-              Right dw            -> Right $ (fromIntegral op) : dw
+          = case emitArg args args' op of
+              Right dw            -> Right dw
               Left err | null ops -> Left err
               Left err            -> match ops
         match [ ]
           = Left $ (show ip) ++ " Invalid instruction: " ++ xx
 
-
-        -- Emit the code for a conditional operator
-        condition op jmp [ Tag ap (ArgImm addr) ]
-          = case getJumpByName jmp of
-              Nothing -> Left $ (show ap) ++ " Invalid condition: " ++ jmp
-              Just n  -> Right $ [ op
-                                 , n
-                                 , addr .&. 0xFF 
-                                 , addr `shiftR` 8
-                                 ]
-        condition op _ (Tag ap _ : _ )
-          = Left $ (show ap) ++ " Expecting imm16"
-
-
         -- Insert arguments into the opcode
-        emitArg ((Tag ap (ArgImm arg)) : as) (arg' : bs) dw@[ a, b, c ]
-          = case arg' of
-              Imm16  -> Right [ a
-                              , arg .&. 0xFF
-                              , arg `shiftR` 8
-                              ] >>= emitArg as bs
-              Imm8 x -> Left "Unimplemented"
-              Imm4 x -> Left "Unimplemented"
-        emitArg ((Tag ap (ArgReg arg)) : as) (arg' : bs) dw@[ a, b, c ]
-          = case arg' of
-              RegX  -> Right [ (a .&. 0xF0) .|. arg
-                             , b
-                             , c
-                             ] >>= emitArg as bs
-              RegY  -> Right [ (a .&. 0x0F) .|. (arg `shiftL` 4)
-                             , b
-                             , c
-                             ] >>= emitArg as bs
-              RegZ  -> Right [ a
-                             , (b .&. 0xF0) .|. arg
-                             , c
-                             ] >>= emitArg as bs
-              p     -> Left $ (show ap) ++ " Expecting " ++ (show p)
+        emitArg ((Tag ap (ArgImm arg)) : as) (arg' : bs) dw
+          = emitArg as bs =<< case arg' of
+              Imm16  -> Right $ (dw .&. 0xFFFF) .|. (arg `shiftL` 16)
+              Imm8 x -> Right $ replaceByte   dw x arg
+              Imm4 x -> Right $ replaceNibble dw x arg
+              Bit x  -> Right $ replaceBit    dw x arg
+              p      -> Left  $ (show ap) ++ " Expecting " ++ (show p)
+        emitArg ((Tag ap (ArgReg arg)) : as) (arg' : bs) dw
+          = emitArg as bs =<< case arg' of
+              RegX  -> Right $ replaceNibble dw 2 arg
+              RegY  -> Right $ replaceNibble dw 3 arg
+              RegZ  -> Right $ replaceNibble dw 4 arg
+              p     -> Left  $ (show ap) ++ " Expecting " ++ (show p)
+        emitArg ((Tag ap ArgSP) : as) (SP : bs) dw
+          = Right dw >>= emitArg as bs
         emitArg [ ] [ ] dw
           = Right dw
         emitArg _ [ ] _
@@ -261,19 +301,11 @@ assembler stmts
         emitArg [ ] (p : ps) _
           = Left $ (show ip) ++ " Expecting " ++ (show p)
 
-    -- Concatenate the code generated by two statements
-    append (Left err) op 
-      = Left err
-    append (Right bc) (Left err)
-      = Left err
-    append (Right bc) (Right op)
-      = Right (BS.append bc (BS.pack op))
-
 
 header :: ByteString -> Put
 header byteCode = do
   putByteString "CH16"
-  putWord16le 0x0011
+  putWord16le 0x1100
   putWord32le $ fromIntegral (BS.length byteCode)
   putWord16le $ 0x0000
   putWord32le $ crc32 byteCode
@@ -283,16 +315,47 @@ header byteCode = do
 --------------------------------------------------------------------------------
 -- Entry point
 --------------------------------------------------------------------------------
+readBin :: String -> [ ( Tag Statement ) ] -> IO (Either String Binaries)
+readBin root statements
+  = mapM readBin' statements >>= (\bs -> return (concat <$> sequence bs))
+  where
+    readBin' (Tag ip (Importbin file _ _ label )) = do
+      let path = root ++ "/" ++ file
+
+      exists <- doesFileExist path
+
+      if not exists 
+        then return (Left $ "Not found: " ++ file)
+        else do
+          handle <- openFile path ReadMode
+          open <- hIsOpen handle
+          if not open
+            then return (Left $ "Cannot open: " ++ file)
+            else do
+              contents <- BS.hGetContents handle
+              return (Right [ ( label, contents ) ])
+    readBin' _
+      = return (Right [])
+
+
 main :: IO ()
 main
   = getArgs >>= \xs -> case xs of
       [ fi, fo ] -> main' fi fo
       _          -> putStrLn "Usage: HCasm input [output]"
 
+
 main' :: String -> String -> IO ()
 main' fi fo = do
   source <- readFile fi
-  
-  case parser source >>= assembler of
-    Left err    -> putStrLn err
-    Right code  -> BS.writeFile fo . runPut . header $ code
+
+  case parser source of
+    Left err -> putStrLn err
+    Right ast -> do      
+      bins <- readBin (takeDirectory fi) ast
+      case bins of
+        Left err -> putStrLn err
+        Right bin -> do        
+          case assembler bin ast of
+            Left err -> putStrLn err
+            Right code -> BS.writeFile fo . runPut . header $ code
