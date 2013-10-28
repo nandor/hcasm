@@ -4,12 +4,14 @@
 --------------------------------------------------------------------------------
 module HCasm where
 
-import           Data.ByteString (ByteString)
-import qualified Data.ByteString as BS
+import           Data.ByteString.Lazy (ByteString)
+import qualified Data.ByteString.Lazy as BS
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import           Data.Char
+import           Data.Digest.CRC32
 import           Data.Bits
+import           Data.Binary.Put
 import           Data.Foldable (asum)
 import           Data.Maybe
 import           Data.Word
@@ -166,11 +168,19 @@ linkLabels
 
 assembler :: [ (Tag Statement) ] -> Either String ByteString
 assembler stmts
-  = BS.pack <$> concat <$> mapM (link >=> emitStmnt) stmts
+  = BS.pack <$> concat <$> mapM (link >=> emitStmnt) ( order stmts [ ] )
   where
     -- Get the address of each label
     labels = linkLabels stmts
 
+
+    -- Moves importbin statements at the end
+    order [] xs
+      = xs
+    order (ib@(Tag ip (Importbin _ _ _ _)) : ss) xs
+      = order ss (ib : xs)
+    order (s : ss) xs
+      = s : order ss xs
 
     -- Replace labels with their addresss
     link (Tag ip (Instr name args))
@@ -260,6 +270,16 @@ assembler stmts
       = Right (BS.append bc (BS.pack op))
 
 
+header :: ByteString -> Put
+header byteCode = do
+  putByteString "CH16"
+  putWord16le 0x0011
+  putWord32le $ fromIntegral (BS.length byteCode)
+  putWord16le $ 0x0000
+  putWord32le $ crc32 byteCode
+  putLazyByteString byteCode
+
+
 --------------------------------------------------------------------------------
 -- Entry point
 --------------------------------------------------------------------------------
@@ -275,4 +295,4 @@ main' fi fo = do
   
   case parser source >>= assembler of
     Left err    -> putStrLn err
-    Right code  -> BS.writeFile fo code
+    Right code  -> BS.writeFile fo . runPut . header $ code
