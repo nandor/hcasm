@@ -4,6 +4,7 @@
 --------------------------------------------------------------------------------
 module HCasm where
 
+
 import           Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as BS
 import           Data.Map (Map)
@@ -13,6 +14,7 @@ import           Data.Digest.CRC32
 import           Data.Bits
 import           Data.Binary.Put
 import           Data.Foldable (asum)
+import           Data.List
 import           Data.Maybe
 import           Data.Word
 import           Debug.Trace
@@ -171,7 +173,7 @@ importbin = do
 -- Parse a single statement
 statement :: Parsec String u (Tag Statement)
 statement
-  = asum stmts <* manyBlank
+  = manyBlank *> asum stmts <* manyBlank
   where
     stmts 
       = [ try declByte
@@ -184,7 +186,7 @@ statement
 -- Parse a list of statements
 parser :: String -> Either String [ ( Tag Statement ) ]
 parser source
-  = case parse (manyBlank *> many1 statement <* eof) "" source of
+  = case parse (many1 statement <* eof) "" source of
       Left  err -> Left $ show err
       Right ast -> Right ast
 
@@ -214,10 +216,11 @@ replaceBit dw i what
 
 assembler ::  Binaries -> [ (Tag Statement) ] ->  Either String ByteString
 assembler bin stmts
-  = BS.pack <$> concat <$> mapM (link >=> emitStmnt) ( order stmts [ ] )
+  = BS.pack <$> concat <$> mapM (link >=> emitStmnt) stmts'
   where
     -- Get the address of each label
-    labels = linkLabels stmts
+    stmts' = order stmts [ ]
+    labels = linkLabels stmts'
 
     -- Find out the adress of each label
     linkLabels
@@ -228,7 +231,7 @@ assembler bin stmts
             Label xs           -> ( ( xs, addr ) : ls, addr )
             Instr op arg       -> ( ls, addr + 4 )
             DeclByte bytes     -> ( ls, addr + (length bytes) )
-            Importbin _ _ s xs -> ( ( xs, addr ) : ls, addr + s )
+            Importbin _ _ s xs -> ( ( xs, addr ) : ls, addr + s)
 
     -- Moves importbin statements at the end
     order [] xs
@@ -257,7 +260,7 @@ assembler bin stmts
     emitStmnt (Tag ip (DeclByte bs))
       = Right bs
     emitStmnt (Tag ip (Importbin file off size label))
-      = case lookup label bin of
+      = case lookup file bin of
           Nothing -> Left  $ " Missing binary: " ++ file
           Just bs -> Right $ BS.unpack (BS.take size' (BS.drop off' bs))
       where
@@ -266,8 +269,8 @@ assembler bin stmts
     emitStmnt (Tag ip (Instr xx@(x : xs) args))
       = splitWord <$> case getOperatorByName xx of
           o : os         -> match (o : os)
-          [ ] | x == 'j' -> emitArg args [ Imm16 ] 0x12
-          [ ] | x == 'c' -> emitArg args [ Imm16 ] 0x17
+          [ ] | x == 'j' -> emitJump xs args 0x12
+          [ ] | x == 'c' -> emitJump xs args 0x17
           _              -> Left $ (show ip) ++ " Invalid instruction: " ++ xx
       where
         match ((_, op, args') : ops)
@@ -277,6 +280,12 @@ assembler bin stmts
               Left err            -> match ops
         match [ ]
           = Left $ (show ip) ++ " Invalid instruction: " ++ xx
+
+        -- Emit a jump instruction
+        emitJump jmp args op
+          = case getJumpByName jmp of
+              Nothing -> Left $ " Invalid jump: " ++ jmp
+              Just x  -> emitArg args [ Imm16 ] $ replaceNibble op 2 x
 
         -- Insert arguments into the opcode
         emitArg ((Tag ap (ArgImm arg)) : as) (arg' : bs) dw
@@ -317,14 +326,21 @@ header byteCode = do
 --------------------------------------------------------------------------------
 readBin :: String -> [ ( Tag Statement ) ] -> IO (Either String Binaries)
 readBin root statements
-  = mapM readBin' statements >>= (\bs -> return (concat <$> sequence bs))
+  = mapM readBin' files >>= (\bs -> return (concat <$> sequence bs))
   where
-    readBin' (Tag ip (Importbin file _ _ label )) = do
+    files = nub $ concatMap getFileName statements
+
+    getFileName (Tag _ (Importbin file _ _ _))
+      = [ file ]
+    getFileName _
+      = [ ]
+
+    readBin' file = do
       let path = root ++ "/" ++ file
 
       exists <- doesFileExist path
 
-      if not exists 
+      if not exists
         then return (Left $ "Not found: " ++ file)
         else do
           handle <- openFile path ReadMode
@@ -333,9 +349,7 @@ readBin root statements
             then return (Left $ "Cannot open: " ++ file)
             else do
               contents <- BS.hGetContents handle
-              return (Right [ ( label, contents ) ])
-    readBin' _
-      = return (Right [])
+              return (Right [ ( file, contents ) ])
 
 
 main :: IO ()
