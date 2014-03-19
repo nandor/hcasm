@@ -22,7 +22,7 @@ import           Control.Applicative ((<*), (*>), (<$>))
 import           Control.Monad
 import           Control.Monad.Instances
 import           Numeric (showHex)
-import           Text.Parsec hiding (label) 
+import           Text.Parsec hiding (label)
 import           Text.Parsec.Pos
 import           Text.Parsec.Language
 import           System.Directory
@@ -50,6 +50,8 @@ data Statement = Label String
                | Instr String [ Tag Argument ]
                | Importbin String Int Int String
                | DeclByte [ Word8 ]
+               | DeclWord [ Word16 ]
+               | Equ String Int
                deriving (Eq, Show)
 
 
@@ -66,10 +68,14 @@ readBase :: Int -> String -> Int
 readBase base
   = foldl (\a x -> a * base + digitToInt x) 0
 
+-- Convers a word to two bytes
+wordToByte :: Int -> [ Word8 ]
+wordToByte num
+  = map fromIntegral [ num .&. 0xFF, (num .&. 0xFF00) `shiftL` 8 ]
 
 -- Parses the newline character
 eol :: Parsec String u ()
-eol 
+eol
   = void $ many1 (oneOf "\r\n")
 
 
@@ -89,7 +95,7 @@ manyBlank
 
 -- Parses a decimal or a hexadecimal constant
 number :: Parsec String u Int
-number 
+number
   = asum [ readBase 16 <$> (try $ string "#"  *> many1 hexDigit)
          , readBase 16 <$> (try $ string "0x" *> many1 hexDigit)
          , readBase 16 <$> (try $ many1 hexDigit <* char 'h')
@@ -99,20 +105,20 @@ number
 -- Parses an identifier
 identifier :: Parsec String u String
 identifier = do
-  first <- letter
+  first <- letter <|> char '_'
   others <- many1 (alphaNum <|> char '_')
   return (first : others)
 
 -- Parses a command argument
 argument :: Parsec String u (Tag Argument)
 argument
-  = getPosition >>= \pos -> (Tag pos) <$> asum 
+  = getPosition >>= \pos -> (Tag pos) <$> asum
     [ ArgReg . digitToInt <$> (char 'r' *> hexDigit)
     , ArgLabel <$> identifier
     , ArgImm <$> number
     , try $ string "sp" >> return ArgSP
     ]
-  
+
 
 -- Parses an identifier followed by ':'
 label :: Parsec String u (Tag Statement)
@@ -143,13 +149,32 @@ declByte = do
   pos <- getPosition
 
   string "db"
+  args <- asum [ try string', try commaSep, return [] ]
 
+  return (Tag pos $ DeclByte (map fromIntegral $ args))
+  where
+    commaSep = do
+      many1 (char ' ' <|> char '\t')
+      sepBy number (char ',' *> many (char ' ' <|> char '\t'))
+
+    string' = do
+      many1 (char ' ' <|> char '\t')
+      char '"'
+      str <- many (noneOf "\"")
+      char '"'
+      return (map ord str)
+
+-- Parses a word array declaration
+declWord :: Parsec String u (Tag Statement)
+declWord = do
+  pos <- getPosition
+
+  string "dw"
   args <- option [] $ do
     many1 (char ' ' <|> char '\t')
     sepBy number (char ',' *> many (char ' ' <|> char '\t'))
 
-  return (Tag pos $ DeclByte (map fromIntegral $ args))
-
+  return $ Tag pos (DeclByte (concatMap wordToByte $ args))
 
 -- Parses a binary file inclusion
 importbin :: Parsec String u (Tag Statement)
@@ -169,14 +194,26 @@ importbin = do
 
   return (Tag pos (Importbin file offset size lbl))
 
+-- Alias
+equ :: Parsec String u (Tag Statement)
+equ = do
+  pos <- getPosition
+  name <- identifier
+  many blank
+  string "equ"
+  many blank
+  value <- number
+  return (Tag pos (Equ name value))
 
 -- Parse a single statement
 statement :: Parsec String u (Tag Statement)
 statement
   = manyBlank *> asum stmts <* manyBlank
   where
-    stmts 
-      = [ try declByte
+    stmts
+      = [ try equ
+        , try declByte
+        , try declWord
         , try importbin
         , try label
         , try instruction
@@ -230,6 +267,7 @@ assembler bin stmts
           = case stmt of
             Label xs           -> ( ( xs, addr ) : ls, addr )
             Instr op arg       -> ( ls, addr + 4 )
+            Equ xs val         -> ( ( xs, val ) : ls, addr )
             DeclByte bytes     -> ( ls, addr + (length bytes) )
             Importbin _ _ s xs -> ( ( xs, addr ) : ls, addr + s)
 
@@ -255,6 +293,8 @@ assembler bin stmts
       = Right stmnt
 
     -- Emit the opcode
+    emitStmnt (Tag ip (Equ _ _))
+      = Right [ ]
     emitStmnt (Tag ip (Label _))
       = Right [ ]
     emitStmnt (Tag ip (DeclByte bs))
@@ -365,11 +405,11 @@ main' fi fo = do
 
   case parser source of
     Left err -> putStrLn err
-    Right ast -> do      
+    Right ast -> do
       bins <- readBin (takeDirectory fi) ast
       case bins of
         Left err -> putStrLn err
-        Right bin -> do        
+        Right bin -> do
           case assembler bin ast of
             Left err -> putStrLn err
             Right code -> BS.writeFile fo . runPut . header $ code
